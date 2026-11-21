@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""Render the news of 21 November 2026 into a single image.
+"""Deliver the Round 2 front page for news-image-20261121.
 
-The program copies ``entry.png`` (stored next to this file) to
-``/output/entry.png``. The image is a fixed, pre-rendered illustration
-summing up the day's world news in one picture. Copying bytes is
-deterministic: two runs on the same input produce identical output.
+The finished illustration lives next to this file as ``entry.png``:
+35 stories from 21 November 2026, grouped into 7 regions on one
+1024x1024 page. This program copies it to ``/output/entry.png``.
+
+Before copying, the source is checked for the PNG signature. After
+copying, the SHA-256 of source and destination are compared; a
+mismatch deletes the broken output and exits non-zero. Copying bytes
+unchanged is deterministic, so repeated runs give identical output.
 
 Standard library only; Python 3.13 or newer.
 """
@@ -16,39 +20,63 @@ import shutil
 import sys
 from pathlib import Path
 
-SOURCE = Path(__file__).resolve().parent / "entry.png"
+HERE = Path(__file__).resolve().parent
+SOURCE = HERE / "entry.png"
 DEST = Path("/output") / "entry.png"
-PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+CHUNK = 1024 * 1024
 
 
-def digest(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
+def sha256_of(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            block = handle.read(CHUNK)
+            if not block:
+                break
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def main() -> int:
     if not SOURCE.is_file():
-        raise FileNotFoundError(f"entry image not found: {SOURCE}")
-    with SOURCE.open("rb") as fh:
-        if fh.read(len(PNG_MAGIC)) != PNG_MAGIC:
-            print(f"error: source is not a valid PNG: {SOURCE}", file=sys.stderr)
-            return 1
+        print(f"error: entry image missing: {SOURCE}", file=sys.stderr)
+        return 1
+    with SOURCE.open("rb") as handle:
+        header = handle.read(len(PNG_SIGNATURE))
+    if header != PNG_SIGNATURE:
+        print(f"error: {SOURCE} is not a PNG file", file=sys.stderr)
+        return 1
+
     DEST.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(SOURCE, DEST)
-    source_digest = digest(SOURCE)
-    dest_digest = digest(DEST)
-    if source_digest != dest_digest:
+
+    source_size = SOURCE.stat().st_size
+    dest_size = DEST.stat().st_size
+    if source_size != dest_size:
         DEST.unlink(missing_ok=True)
         print(
-            f"error: copy verification failed: {SOURCE} (sha256={source_digest}) "
-            f"!= {DEST} (sha256={dest_digest}); incomplete output removed",
+            "error: copy verification failed, incomplete output removed: "
+            f"source is {source_size} bytes but dest is {dest_size} bytes",
             file=sys.stderr,
         )
         return 1
-    print(f"Wrote {DEST} ({DEST.stat().st_size} bytes, sha256={dest_digest})")
+
+    source_hash = sha256_of(SOURCE)
+    dest_hash = sha256_of(DEST)
+    if source_hash != dest_hash:
+        DEST.unlink(missing_ok=True)
+        print(
+            "error: copy verification failed, incomplete output removed: "
+            f"source sha256={source_hash} dest sha256={dest_hash}",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(
+        f"Wrote {DEST} ({dest_size} bytes, sha256={dest_hash}); "
+        f"source verified identical ({source_size} bytes)"
+    )
     return 0
 
 
